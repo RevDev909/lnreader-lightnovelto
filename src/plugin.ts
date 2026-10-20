@@ -156,7 +156,7 @@ class LightNovelToPlugin implements Plugin.PluginBase {
   name = 'LightNovel.to';
   icon = 'src/en/lightnovelto/icon.png';
   site = 'https://lightnovel.to';
-  version = '1.0.1';
+  version = '1.0.2';
 
   async popularNovels(
     pageNo: number,
@@ -227,7 +227,8 @@ class LightNovelToPlugin implements Plugin.PluginBase {
     return parseCatalogCards(html);
   }
 
-  resolveUrl = (path: string, _isNovel?: boolean) => this.site + path;
+  resolveUrl = (path: string, _isNovel?: boolean) =>
+    /^https?:\/\//i.test(path) ? path : this.site + path;
 }
 
 export default new LightNovelToPlugin();
