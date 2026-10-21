@@ -269,6 +269,47 @@ export function parseChapterList(text: string): ChapterEntry[] {
  * then matched to its closing tag by depth scan so nested markup
  * can never truncate the content.
  */
+/**
+ * Strip executable content from chapter HTML before it reaches the
+ * reader: scripts, frames, form elements, inline event handlers and
+ * javascript:/vbscript: URLs (tested after stripping control chars
+ * and lowercasing, so java<TAB>script: and mixed-case smuggling fail).
+ */
+export function sanitizeChapterHtml(html: string): string {
+  return html
+    .replace(
+      /<(script|style|noscript|iframe|object|embed|form)\b[\s\S]*?<\/\1\s*>/gi,
+      '',
+    )
+    .replace(
+      /<(script|style|noscript|iframe|object|embed|form|link|meta|base)\b[^>]*>/gi,
+      '',
+    )
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
+    .replace(/\sstyle\s*=\s*"[^"]*"/gi, '')
+    .replace(/\sstyle\s*=\s*'[^']*'/gi, '')
+    .replace(/\s(?:href|src)\s*=\s*"[^"]*"/gi, function (m: string) {
+      const valueMatch = /"([^"]*)"/.exec(m);
+      const url = valueMatch ? valueMatch[1] : '';
+      // Browsers ignore control characters inside URL schemes, so
+      // drop them (by code point, not a regex — eslint forbids
+      // control-character regexes) before testing the scheme.
+      const clean = url
+        .split('')
+        .filter(function (ch: string) {
+          const code = ch.charCodeAt(0);
+          return code > 32 && code !== 127;
+        })
+        .join('')
+        .toLowerCase();
+      if (/^(javascript|vbscript)\s*:/.test(clean)) return '';
+      if (/^data\s*:\s*text\/html/.test(clean)) return '';
+      return m;
+    });
+}
+
 export function parseChapterContent(html: string): string {
   checkSize(html);
   const clean = html
@@ -307,5 +348,5 @@ export function parseChapterContent(html: string): string {
     }
   }
   if (contentEnd < 0) return '';
-  return clean.slice(contentStart, contentEnd).trim();
+  return sanitizeChapterHtml(clean.slice(contentStart, contentEnd).trim());
 }

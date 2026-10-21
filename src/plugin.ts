@@ -98,6 +98,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 
 interface RawFetchResult {
   status?: number;
+  retryAfter?: number;
   text: string;
 }
 
@@ -108,7 +109,18 @@ async function fetchRaw(url: string): Promise<RawFetchResult> {
       res && typeof res.status === 'number' ? res.status : undefined;
     const text =
       res && typeof res.text === 'function' ? await res.text() : '';
-    return { status, text };
+    // Retry-After only matters on 429; parse it defensively and cap it
+    // at 10s so a hostile header can't stall the retry loop.
+    let retryAfter: number | undefined;
+    const rawHeader =
+      res && res.headers && typeof res.headers.get === 'function'
+        ? res.headers.get('retry-after')
+        : undefined;
+    if (typeof rawHeader === 'string') {
+      const parsed = parseInt(rawHeader, 10);
+      if (!isNaN(parsed) && parsed >= 0) retryAfter = Math.min(parsed, 10);
+    }
+    return { status, retryAfter, text };
   }
   if (typeof fetchLib.fetchText === 'function') {
     return { text: await fetchLib.fetchText(url) };
@@ -126,9 +138,11 @@ async function fetchText(url: string): Promise<string> {
   let lastError: any = new Error('Request failed');
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
     let status: number | undefined;
+    let retryAfterSecs: number | undefined;
     try {
       const res = await withTimeout(fetchRaw(url), FETCH_TIMEOUT_MS);
       status = res.status;
+      retryAfterSecs = res.retryAfter;
       if (status === 429 || (status !== undefined && status >= 500)) {
         throw new Error('Server responded with HTTP ' + status);
       }
@@ -136,6 +150,9 @@ async function fetchText(url: string): Promise<string> {
     } catch (e) {
       lastError = e;
       if (status === undefined) status = statusFromError(e);
+      // Attach the status so callers (and the app) can tell a site
+      // block or outage apart from a plugin bug.
+      (lastError as any).status = status;
       const msg = String((e && (e as Error).message) || e || '');
       const retryable =
         status === undefined ||
@@ -143,7 +160,11 @@ async function fetchText(url: string): Promise<string> {
         status >= 500 ||
         /timed out|timeout|Network|network|fetch failed/i.test(msg);
       if (!retryable || attempt === MAX_FETCH_ATTEMPTS) throw lastError;
-      await sleep(1000 * Math.pow(2, attempt - 1)); // 1s, then 2s
+      const waitSecs =
+        status === 429 && retryAfterSecs !== undefined
+          ? retryAfterSecs
+          : Math.pow(2, attempt - 1);
+      await sleep(1000 * waitSecs); // 1s, then 2s, or Retry-After on 429
     }
   }
   throw lastError;
@@ -156,7 +177,7 @@ class LightNovelToPlugin implements Plugin.PluginBase {
   name = 'LightNovel.to';
   icon = 'src/en/lightnovelto/icon.png';
   site = 'https://lightnovel.to';
-  version = '1.0.2';
+  version = '1.0.3';
 
   async popularNovels(
     pageNo: number,
@@ -227,8 +248,11 @@ class LightNovelToPlugin implements Plugin.PluginBase {
     return parseCatalogCards(html);
   }
 
-  resolveUrl = (path: string, _isNovel?: boolean) =>
-    /^https?:\/\//i.test(path) ? path : this.site + path;
+  resolveUrl = (path: string, _isNovel?: boolean) => {
+    if (/^https?:\/\//i.test(path)) return path;
+    if (path.indexOf('//') === 0) return 'https:' + path;
+    return this.site + path;
+  };
 }
 
 export default new LightNovelToPlugin();
