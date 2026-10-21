@@ -275,6 +275,16 @@ export function parseChapterList(text: string): ChapterEntry[] {
  * javascript:/vbscript: URLs (tested after stripping control chars
  * and lowercasing, so java<TAB>script: and mixed-case smuggling fail).
  */
+/**
+ * Strip executable content from chapter HTML before it reaches the
+ * reader: scripts, frames, form elements, inline event handlers and
+ * javascript:/vbscript:/data:text/html URLs. URL values are checked
+ * regardless of quoting (double, single, or unquoted) and AFTER
+ * decoding HTML entities, so 'javascript:...' and '&#106;avascript:...'
+ * are caught equally; schemes are then tested after stripping control
+ * characters and lowercasing, so mixed-case and control-character
+ * smuggling fail too.
+ */
 export function sanitizeChapterHtml(html: string): string {
   return html
     .replace(
@@ -290,24 +300,58 @@ export function sanitizeChapterHtml(html: string): string {
     .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
     .replace(/\sstyle\s*=\s*"[^"]*"/gi, '')
     .replace(/\sstyle\s*=\s*'[^']*'/gi, '')
-    .replace(/\s(?:href|src)\s*=\s*"[^"]*"/gi, function (m: string) {
-      const valueMatch = /"([^"]*)"/.exec(m);
-      const url = valueMatch ? valueMatch[1] : '';
-      // Browsers ignore control characters inside URL schemes, so
-      // drop them (by code point, not a regex — eslint forbids
-      // control-character regexes) before testing the scheme.
-      const clean = url
-        .split('')
-        .filter(function (ch: string) {
-          const code = ch.charCodeAt(0);
-          return code > 32 && code !== 127;
-        })
-        .join('')
-        .toLowerCase();
-      if (/^(javascript|vbscript)\s*:/.test(clean)) return '';
-      if (/^data\s*:\s*text\/html/.test(clean)) return '';
-      return m;
+    .replace(/\s(?:href|src)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, function (m: string) {
+      return isSafeUrlValue(m) ? m : '';
     });
+}
+
+// Decode HTML character references the way a browser decodes an
+// attribute value: numeric (decimal and hex) plus the common named
+// references, repeated so double-encoding can't smuggle a scheme past
+// the check. Decoding only ever makes the check stricter, never looser.
+function decodeEntities(value: string): string {
+  let out = value;
+  for (let i = 0; i < 3; i++) {
+    const next = out
+      .replace(/&#(\d+);/g, function (_m: string, code: string) {
+        const n = parseInt(code, 10);
+        return !isNaN(n) && n >= 0 && n <= 0x10ffff ? String.fromCharCode(n) : _m;
+      })
+      .replace(/&#x([0-9a-fA-F]+);/g, function (_m: string, code: string) {
+        const n = parseInt(code, 16);
+        return !isNaN(n) && n >= 0 && n <= 0x10ffff ? String.fromCharCode(n) : _m;
+      })
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'");
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+function isSafeUrlValue(attr: string): boolean {
+  let raw = '';
+  const quoted = /"([^"]*)"|'([^']*)'/.exec(attr);
+  if (quoted) {
+    raw = quoted[1] !== undefined ? quoted[1] : quoted[2];
+  } else {
+    const unquoted = /=\s*([^\s>]+)/.exec(attr);
+    if (unquoted) raw = unquoted[1];
+  }
+  const clean = decodeEntities(raw)
+    .split('')
+    .filter(function (ch: string) {
+      const code = ch.charCodeAt(0);
+      return code > 32 && code !== 127;
+    })
+    .join('')
+    .toLowerCase();
+  if (/^(javascript|vbscript)\s*:/.test(clean)) return false;
+  if (/^data\s*:\s*text\/html/.test(clean)) return false;
+  return true;
 }
 
 export function parseChapterContent(html: string): string {
