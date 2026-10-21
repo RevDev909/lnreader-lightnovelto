@@ -177,7 +177,7 @@ class LightNovelToPlugin implements Plugin.PluginBase {
   name = 'LightNovel.to';
   icon = 'src/en/lightnovelto/icon.png';
   site = 'https://lightnovel.to';
-  version = '1.0.4';
+  version = '1.0.5';
 
   async popularNovels(
     pageNo: number,
